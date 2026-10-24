@@ -1,0 +1,8 @@
+__pycache__/
+.DS_Store
+# transcripts and recordings hold call content: never commit them
+*.transcript.md
+*.transcript.json
+*.mov
+*.mp4
+*.wav

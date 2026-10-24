@@ -46,3 +46,7 @@ Turns that stay doubtful are marked `(speaker uncertain)`. The header lists part
 - The video scan is the slowest step: about 10 seconds per minute of 4K60 video. The audio steps take about 14 minutes for a 72 minute call.
 - Peak memory is about 10 GB at any call length.
 - Whisper can still mis-hear names. Pass them with `--terms`.
+
+## License
+
+[MIT](LICENSE). The models it downloads (Whisper, pyannote) have their own licenses and terms.
