@@ -17,8 +17,10 @@ die() {
   exit 1
 }
 
-[ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] ||
-  die "transcribe-call needs macOS on Apple Silicon (mlx-whisper)."
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) ;;
+  *) die "transcribe-call needs macOS on Apple Silicon (mlx-whisper)." ;;
+esac
 
 if [ -n "${TRANSCRIBE_CALL_WHEEL:-}" ]; then
   wheel="$TRANSCRIBE_CALL_WHEEL"
