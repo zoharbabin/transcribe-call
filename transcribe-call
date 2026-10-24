@@ -25,35 +25,54 @@ import cv2
 import numpy as np
 
 START = time.time()
-SCAN_WIDTH = 1600
-WHISPER_MODEL = 'mlx-community/whisper-large-v3-mlx'
+SCAN_WIDTH = 1600  # video frames are scaled to this width for the border scan; box coordinates use this space
+WHISPER_MODEL = 'mlx-community/whisper-large-v3-mlx'  # full large-v3, not turbo: more accurate on accents
+# community-1 needs no access to the gated segmentation-3.0 repo that speaker-diarization-3.1 pulls in
 DIARIZATION_MODEL = 'pyannote/speaker-diarization-community-1'
 EMBEDDING_MODEL = 'pyannote/wespeaker-voxceleb-resnet34-LM'
+# rumble cut, steady-noise reduction, lift quiet speech. Heavy denoising can hurt Whisper (--no-denoise)
 DENOISE = 'highpass=f=80,afftdn=nf=-25,dynaudnorm=f=150:g=15'
 SHORT_TURN = 4.0  # seconds; shorter turns are re-checked by voice embedding
 UNSURE_SIM = 0.35  # cosine similarity below this marks a short turn as uncertain
+# MLX keeps freed GPU buffers for reuse. Uncapped, that cache grew with the audio length (17 GB for 30 minutes,
+# about 32 GB for a 72 minute call) and the Mac ran out of memory. At 1 GiB, memory stays flat at the same speed.
+MLX_CACHE_LIMIT = 1 << 30
+# Voice embedding memory grows with clip length and turns can last minutes (17 GB on a 72 minute call).
+# The first 30 seconds of a turn is enough to identify the voice.
+MAX_EMBED_SECONDS = 30
 
 
 def log(msg):
+    """Progress line on stderr, prefixed with seconds since start."""
     print(f'[{time.time() - START:6.0f}s] {msg}', file=sys.stderr, flush=True)
 
 
 def run(cmd, **kw):
+    """Run a command, raise on failure, capture output."""
     return subprocess.run(cmd, check=True, capture_output=True, **kw)
 
 
 def clock(t):
+    """Seconds to mm:ss, or h:mm:ss from one hour."""
     h, rest = divmod(int(t), 3600)
     return f'{h}:{rest // 60:02d}:{rest % 60:02d}' if h else f'{rest // 60:02d}:{rest % 60:02d}'
 
 
 def extract_audio(src, wav, denoise):
+    """Write 16 kHz mono WAV (what Whisper and pyannote expect), optionally cleaned up."""
     cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', str(src), '-vn', '-ac', '1', '-ar', '16000']
     run(cmd + (['-af', DENOISE] if denoise else []) + [str(wav)])
 
 
 def transcribe(wav, language, prompt):
+    """Whisper words with timestamps. The prompt (names, terms) biases spelling.
+
+    No conditioning on previous text, so one bad passage does not spread. Word timestamps
+    are required by the hallucination filter, which drops text invented over silence.
+    """
+    import mlx.core
     import mlx_whisper
+    mlx.core.set_cache_limit(MLX_CACHE_LIMIT)
     result = mlx_whisper.transcribe(
         str(wav), path_or_hf_repo=WHISPER_MODEL, language=language, initial_prompt=prompt,
         word_timestamps=True, condition_on_previous_text=False, hallucination_silence_threshold=2)
@@ -61,6 +80,7 @@ def transcribe(wav, language, prompt):
 
 
 def diarize(wav, min_speakers, max_speakers):
+    """pyannote voice segments: [{start, end, speaker: 'SPEAKER_00'}, ...] in seconds."""
     import torch
     from pyannote.audio import Pipeline
     pipe = Pipeline.from_pretrained(DIARIZATION_MODEL)
@@ -73,7 +93,10 @@ def diarize(wav, min_speakers, max_speakers):
 # ---- video: who has the green border -------------------------------------------------
 
 def active_tile(frame):
-    """(x, y, w, h) of Zoom's green active-speaker outline, or None."""
+    """(x, y, w, h) of Zoom's green active-speaker outline, or None.
+
+    Keeps only long straight green runs, so green video content (plants, walls) is ignored.
+    """
     r, g, b = (frame[..., i].astype(np.int16) for i in range(3))
     mask = ((g - r > 35) & (g - b > 35) & (g > 110)).astype(np.uint8)
     lines = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((1, 40), np.uint8)) \
@@ -84,12 +107,20 @@ def active_tile(frame):
     return max(boxes, key=lambda b: b[2] * b[3]) if boxes else None
 
 
-def scan_video(src, fps):
+def scan_video(src, fps, keyframes_only=False):
+    """One row per sampled frame: {t, box, sig}.
+
+    box is the active tile (or None). sig is a colour fingerprint of the tile centre; the
+    same person gets a similar sig, which is how tiles are matched when the layout reorders.
+    keyframes_only decodes just the keyframes (every few seconds) and holds each until the
+    next one. That is far faster on 4K60, but the border is tracked less finely.
+    """
     probe = run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height',
                  '-of', 'csv=p=0', str(src)], text=True).stdout.strip().split(',')
     width = SCAN_WIDTH
     height = round(width * int(probe[1]) / int(probe[0])) // 2 * 2
-    cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-hwaccel', 'videotoolbox', '-i', str(src),
+    cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', *(['-skip_frame', 'nokey'] if keyframes_only else []),
+           '-hwaccel', 'videotoolbox', '-i', str(src),
            '-vf', f'fps={fps},scale={width}:{height}', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-']
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=width * height * 3 * 4)
     rows = []
@@ -131,12 +162,17 @@ def read_label(src, t, box, tmp):
 
 
 def match_name(text, names):
+    """Closest participant name to noisy OCR text, or None if nothing is close enough."""
     best = max(names, key=lambda n: difflib.SequenceMatcher(None, text.lower(), n.lower()).ratio())
     return best if difflib.SequenceMatcher(None, text.lower(), best.lower()).ratio() >= 0.6 else None
 
 
 def video_track(src, rows, names, tmp):
-    """Per scan frame: the participant name with the green border, or None."""
+    """Per scan frame: the participant name with the green border, or None.
+
+    Tiles are clustered by appearance, then each cluster is named by a vote over OCR reads
+    of a few of its frames. A single OCR read is too noisy; the vote and the fuzzy match are not.
+    """
     idx = [i for i, r in enumerate(rows) if r['sig'] is not None]
     if len(idx) < 0.05 * len(rows):
         log('no green active-speaker border found; skipping video')
@@ -165,7 +201,12 @@ def video_track(src, rows, names, tmp):
 
 
 def voice_names(segs, track, fps):
-    """Name each pyannote voice by the participant whose border it overlaps most."""
+    """Name each pyannote voice by the participant whose border it overlaps most.
+
+    Needs 40% overlap. Two voices may get the same name (one person split in two). Voices
+    that never pass the bar stay "Speaker N". The border lags the voice, so this works on
+    totals per voice, not on exact timing.
+    """
     names = {}
     for voice in sorted({s['speaker'] for s in segs}):
         seen = collections.Counter()
@@ -186,6 +227,10 @@ def voice_names(segs, track, fps):
 # ---- merge ---------------------------------------------------------------------------
 
 def build_turns(words, segs, names):
+    """Give each word the voice it overlaps most, then group runs into speaker turns.
+
+    A pause over 2.5 seconds starts a new turn even for the same speaker.
+    """
     def voice_of(w):
         overlap = [(min(w['end'], s['end']) - max(w['start'], s['start']), s['speaker']) for s in segs]
         best = max(overlap)
@@ -209,7 +254,12 @@ def build_turns(words, segs, names):
 
 
 def refine_turns(wav_path, turns, track, fps):
-    """Re-assign short turns to the closest voice profile; mark the doubtful ones."""
+    """Re-assign short turns to the closest voice profile; mark the doubtful ones.
+
+    Profiles come from turns of 5+ seconds that the video agrees with. Short turns are where
+    both pyannote and the lagging border go wrong. A turn is "unsure" if even its best match
+    is weak, or the video still disagrees.
+    """
     import torch
     from pyannote.audio import Inference, Model
     from scipy.io import wavfile
@@ -220,7 +270,8 @@ def refine_turns(wav_path, turns, track, fps):
     inference.to(torch.device('mps' if torch.backends.mps.is_available() else 'cpu'))
 
     def embed(t):
-        a, b = t['start'], max(t['end'], t['start'] + 0.5)
+        a = t['start']
+        b = min(max(t['end'], a + 0.5), a + MAX_EMBED_SECONDS)
         chunk = torch.from_numpy(wav[int(max(0, a - 0.05) * sr):int((b + 0.05) * sr)])[None]
         e = inference({'waveform': chunk, 'sample_rate': sr})
         return e / np.linalg.norm(e)
@@ -252,6 +303,7 @@ def refine_turns(wav_path, turns, track, fps):
 
 
 def write_outputs(src, out_dir, turns, names):
+    """Write NAME.transcript.md and .json; the header lists named participants who never spoke."""
     base = Path(out_dir) / src.stem
     md = Path(f'{base}.transcript.md')
     spoke = sorted({t['speaker'] for t in turns})
@@ -277,6 +329,8 @@ def main():
     ap.add_argument('--speakers', type=int, help='exact number of speakers, if known')
     ap.add_argument('--no-denoise', action='store_true', help='skip the audio clean-up filter')
     ap.add_argument('--video-fps', type=float, default=2, help='frames per second scanned for the speaker border')
+    ap.add_argument('--fast-scan', action='store_true',
+                    help='scan only video keyframes: much faster on 4K, but coarser speaker tracking')
     ap.add_argument('--out', type=Path, help='output directory (default: next to the recording)')
     args = ap.parse_args()
     src = args.recording.expanduser().resolve()
@@ -301,7 +355,7 @@ def main():
         track = [None] * int(max(w['end'] for w in words) * fps + 2)
         if names:
             log('scanning video for the active speaker')
-            rows = scan_video(src, fps)
+            rows = scan_video(src, fps, args.fast_scan)
             log(f'{sum(r["box"] is not None for r in rows)}/{len(rows)} frames have an active speaker; reading name labels')
             track = video_track(src, rows, names, tmp)
         voice_to_name = voice_names(segs, track, fps)

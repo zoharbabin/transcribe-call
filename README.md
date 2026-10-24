@@ -30,6 +30,7 @@ Turns that stay doubtful are marked `(speaker uncertain)`. The header lists part
 | `--speakers N` | Exact speaker count, if known. |
 | `--no-denoise` | Skip the audio clean-up filter. |
 | `--video-fps` | Video scan rate. Default 2. |
+| `--fast-scan` | Scan only video keyframes. About 13x faster on 4K60, but the border is tracked every few seconds instead of every `--video-fps`. |
 | `--out DIR` | Output directory. |
 
 ## Requirements
@@ -41,6 +42,7 @@ Turns that stay doubtful are marked `(speaker uncertain)`. The header lists part
 
 ## Limits
 
-- Speaker naming works on Zoom gallery view. Without a green border, speakers fall back to `Speaker N`.
-- A 21 minute 4K call takes about 17 minutes. The video scan is the slowest step.
+- Speaker naming works on Zoom gallery view. Without a green border, speakers fall back to `Speaker N`. Teams recordings have no green border: leave out `--names` to skip the scan.
+- The video scan is the slowest step: about 10 seconds per minute of 4K60 video. The audio steps take about 14 minutes for a 72 minute call.
+- Peak memory is about 10 GB at any call length.
 - Whisper can still mis-hear names. Pass them with `--terms`.
