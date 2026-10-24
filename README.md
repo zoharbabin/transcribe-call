@@ -33,12 +33,33 @@ Turns that stay doubtful are marked `(speaker uncertain)`. The header lists part
 | `--fast-scan` | Scan only video keyframes. About 13x faster on 4K60, but the border is tracked every few seconds instead of every `--video-fps`. |
 | `--out DIR` | Output directory. |
 
-## Requirements
+## Install and update
 
-- macOS on Apple Silicon (mlx-whisper and the videotoolbox decoder)
-- `ffmpeg`, `tesseract`
-- Python 3 with `mlx-whisper`, `pyannote.audio`, `torch`, `opencv-python`, `numpy`, `scipy`
-- A Hugging Face login (`hf auth login`). Accept the terms for the gated pyannote models on their model pages first.
+macOS on Apple Silicon only (mlx-whisper and the videotoolbox decoder).
+
+```sh
+curl -fsSL https://github.com/zoharbabin/transcribe-call/releases/latest/download/install.sh | sh
+```
+
+Run the same command again to update. It installs `ffmpeg`, `tesseract` and `uv` with Homebrew if they are missing, then installs the latest release into its own Python 3.13 environment. The download is checked against a SHA-256 baked into the installer.
+
+One-time setup: accept the terms for the gated pyannote models on their model pages, then run `uvx --from huggingface-hub hf auth login`.
+
+| Task | Command |
+|---|---|
+| Check the version | `transcribe-call --version` |
+| Install a specific version | `curl -fsSL https://github.com/zoharbabin/transcribe-call/releases/download/vX.Y.Z/install.sh \| sh` |
+| Uninstall | `uv tool uninstall transcribe-call` |
+
+## Releasing
+
+The version is the git tag. Releases are final versions only (`vX.Y.Z`).
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The `Release` workflow then runs lint and tests, builds the wheel, installs it on a macOS runner with `install.sh`, and publishes a GitHub Release. The release holds the wheel, the sdist, a version-stamped `install.sh` and `SHA256SUMS`. Fix a bad release by deleting it and its tag (`gh release delete vX.Y.Z --cleanup-tag`), then tag again.
 
 ## Limits
 

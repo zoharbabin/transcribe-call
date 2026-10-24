@@ -6,3 +6,7 @@ __pycache__/
 *.mov
 *.mp4
 *.wav
+.venv/
+dist/
+.pytest_cache/
+.ruff_cache/

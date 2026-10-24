@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Transcribe a call recording with speaker names, at the highest accuracy.
 
     transcribe-call RECORDING --names "Ann Lee,bob.ray" [--terms "Acme,Zephyr"]
@@ -19,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from importlib import metadata
 from pathlib import Path
 
 import cv2
@@ -322,6 +322,7 @@ def write_outputs(src, out_dir, turns, names):
 
 def main():
     ap = argparse.ArgumentParser(description='Transcribe a call recording with speaker names.')
+    ap.add_argument('--version', action='version', version=f'transcribe-call {metadata.version("transcribe-call")}')
     ap.add_argument('recording', type=Path)
     ap.add_argument('--names', default='', help='comma-separated participant names as Zoom shows them')
     ap.add_argument('--terms', default='', help='comma-separated product or person names to bias spelling')

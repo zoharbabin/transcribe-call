@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "transcribe-call"
+dynamic = ["version"]
+description = "Transcribe a call recording with named speakers, at the highest accuracy."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Zohar Babin" }]
+requires-python = ">=3.13"
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+    "mlx-whisper>=0.4.3",
+    "pyannote.audio>=4.0.4",
+    "torch>=2.10",
+    "opencv-python-headless>=4.11",
+    "numpy>=2.0",
+    "scipy>=1.13",
+]
+
+[project.urls]
+Repository = "https://github.com/zoharbabin/transcribe-call"
+
+[project.scripts]
+transcribe-call = "transcribe_call:main"
+
+[dependency-groups]
+dev = ["pytest", "ruff"]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["transcribe_call.py"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
